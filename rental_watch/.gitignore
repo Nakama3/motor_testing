@@ -1,0 +1,3 @@
+inbox/*.eml
+inbox/done/
+__pycache__/

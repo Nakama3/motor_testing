@@ -1,0 +1,44 @@
+# Rental Watch settings. Edit freely; every run re-reads this file.
+
+[criteria]
+max_rent = 2000
+min_beds = 0            # 0 = studio
+max_beds = 1
+min_baths = 1           # listings that don't state baths are kept
+
+[location]
+# A listing passes if EITHER rule holds (when the site gives a map pin):
+max_miles_to_caltrain = 1.0       # walking distance to any Caltrain station
+max_miles_to_redwood_city = 12.0  # roughly a 30-minute drive
+# Listings with no map pin are kept only if their city is in this list.
+# This list is also what gets searched on the city-based sites.
+cities = [
+  "San Francisco", "South San Francisco", "San Bruno", "Millbrae",
+  "Burlingame", "San Mateo", "Belmont", "San Carlos", "Redwood City",
+  "Menlo Park", "Palo Alto", "Mountain View", "Sunnyvale",
+]
+
+[sources]
+craigslist = true
+zillow = true
+apartments_com = true
+zumper = true
+hotpads = true
+email_alerts = true   # parses .eml files dropped into rental_watch/inbox/
+
+[craigslist]
+# Craigslist SF Bay subareas: sfc = SF city, pen = peninsula, sby = south bay
+subareas = ["sfc", "pen", "sby"]
+
+[zillow]
+max_pages = 3
+# Map boxes searched on Zillow: [west, east, south, north]
+boxes = [
+  [-122.52, -122.36, 37.70, 37.81],   # San Francisco
+  [-122.47, -122.25, 37.50, 37.70],   # South SF to Belmont
+  [-122.30, -122.02, 37.36, 37.53],   # San Carlos to Sunnyvale
+]
+
+[fetch]
+delay_seconds = 3     # pause between requests to the same site
+timeout_seconds = 30
