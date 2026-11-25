@@ -216,6 +216,21 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); borde
   </section>
 
   <section>
+    <h2>iPhone tracking</h2>
+    <div id="phoneStatus" class="status">No iPhone connected.</div>
+    <div class="row" style="margin-top:8px">
+      <button id="cal1Btn">Set point 1</button>
+      <button id="cal2Btn" disabled>Set point 2</button>
+    </div>
+    <div id="calStatus" class="muted" style="margin-bottom:8px">Not calibrated.</div>
+    <div class="row" style="grid-template-columns: 1fr 1fr">
+      <label>Min spacing<input type="number" id="autoSpacing" step="0.1" min="0.1"></label>
+      <label>&nbsp;<button id="autoBtn" class="primary" style="width:100%; margin-top:3px" disabled>Auto-sample <kbd>A</kbd></button></label>
+    </div>
+    <p class="hint">Start the WiFi Tracker app on the iPhone (see README) and hold the phone with the camera facing ahead. To calibrate, stand at a spot you can find on the plan (a doorway or corner), click it, and press <b>Set point 1</b>. Walk to a second spot at least 3 m (10 ft) away, click it, and press <b>Set point 2</b>. Your position and floor then follow the phone. Press <b>Auto-sample</b> and walk the house.</p>
+  </section>
+
+  <section>
     <h2>2 · House</h2>
     <div class="row">
       <label>Units<select id="units"><option value="m">meters</option><option value="ft">feet</option></select></label>
@@ -324,13 +339,15 @@ const defaultProject = () => ({
   deviceHeight: 1.0,
   routerHeight: 1.0,
   samplesPerPoint: 5,
+  autoSpacing: 0.3,             // auto-sample: min movement between samples (m)
+  phoneCal: null,               // iPhone ARKit -> house calibration
   samples: [],                  // { x, y, floor, h, dbm, t, ssid, manual }
   floorplans: {},               // floor index -> dataURL
   viz: { min: -90, mid: -67, max: -35, res: 0.5, size: 0.35, opacity: 0.55,
          cloud: true, cloudScope: 'all', filter: 'all' },
 });
 let P = defaultProject();
-const ui = { mode: 'position', floor: 0, pos: null, server: false, busy: false, hover2d: null };
+const ui = { mode: 'position', floor: 0, pos: null, posH: null, server: false, busy: false, hover2d: null };
 
 // ---------------------------------------------------------------- units
 const toU = m => P.units === 'ft' ? m * FT : m;
@@ -481,7 +498,7 @@ function demoParams() {
   // in demo walk mode the mouse cursor stands in for where you are
   const p = walk.on ? (ui.hover2d || ui.pos) : ui.pos, rp = routerPos();
   if (!p) return '';
-  const z = ui.floor * fh() + P.deviceHeight;
+  const z = ui.floor * fh() + (ui.posH ?? P.deviceHeight);
   const r = rp || [P.house.width / 2, P.house.depth / 2, 1];
   return `&x=${p.x}&y=${p.y}&z=${z}&rx=${r[0]}&ry=${r[1]}&rz=${r[2]}`;
 }
@@ -498,7 +515,7 @@ function showLive(j) {
 }
 let livePending = false;
 async function livePoll() {
-  if ($('liveChk').checked && ui.server && !livePending && !ui.busy && !walk.on) {
+  if ($('liveChk').checked && ui.server && !livePending && !ui.busy && !walk.on && !auto.on) {
     livePending = true;
     try { showLive(await readSignal(1)); } catch (e) { $('liveDbm').textContent = '—'; $('liveInfo').textContent = e.message; }
     livePending = false;
@@ -508,7 +525,7 @@ async function livePoll() {
 
 function addSample(dbm, extra = {}) {
   if (!ui.pos) { setStatus('Click the floor plan to mark where you are first.', true); return false; }
-  P.samples.push({ x: +ui.pos.x.toFixed(2), y: +ui.pos.y.toFixed(2), floor: ui.floor, h: P.deviceHeight,
+  P.samples.push({ x: +ui.pos.x.toFixed(2), y: +ui.pos.y.toFixed(2), floor: ui.floor, h: +(ui.posH ?? P.deviceHeight).toFixed(2),
                    dbm: +(+dbm).toFixed(1), t: Date.now(), ...extra });
   setStatus(`Sample ${P.samples.length}: ${Math.round(dbm)} dBm (${quality(dbm)}) at ${fmtU(ui.pos.x)}, ${fmtU(ui.pos.y)} ${P.units}, ${floorName(ui.floor).toLowerCase()}.`);
   changed();
@@ -517,6 +534,7 @@ function addSample(dbm, extra = {}) {
 async function takeSample() {
   if (ui.busy) return;
   if (walk.on) { setStatus('Walking: click where you are to log the readings, or press Esc to stop.'); return; }
+  if (auto.on) { setStatus('Auto-sampling is on. Samples are taken as you move.'); return; }
   if (!ui.pos) { setStatus('Click the floor plan to mark where you are first.', true); return; }
   if (!ui.server) { setStatus('No server: type a dBm value and use "Add manual".', true); return; }
   ui.busy = true; $('takeBtn').disabled = true; $('takeBtn').textContent = 'Reading…';
@@ -557,6 +575,8 @@ async function walkLoop() {
 }
 function startWalk() {
   if (walk.on || ui.busy) return;
+  if (auto.on) { setStatus('Stop auto-sampling first.', true); return; }
+  if (calibrated()) { setStatus('Your position follows the iPhone. Use Auto-sample (A) instead of walk mode.', true); return; }
   if (!ui.server) { setStatus('Walk mode needs the server (python3 server.py) to read the signal.', true); return; }
   if (!ui.pos) { setStatus('Click the floor plan where you are standing, then press W to start walking.', true); return; }
   setMode('position');
@@ -586,6 +606,166 @@ function walkTo(p) {
   const len = Math.hypot(p.x - a.x, p.y - a.y);
   if (!legReadings.length) setStatus(`No readings on that ${fmtU(len)} ${P.units} leg. Walk more slowly${navigator.platform.startsWith('Mac') ? ', or install CoreWLAN for faster readings (see README)' : ''}.`, true);
   else setStatus(`Logged ${legReadings.length} samples along ${fmtU(len)} ${P.units}. Keep walking and click at the next corner, or press Esc.`);
+}
+
+// ---------------------------------------------------------------- iPhone tracking
+// The WiFi Tracker app POSTs its ARKit position (meters, y up, arbitrary origin and
+// heading) to the server ~5x/s. A two-point calibration maps it onto the plan:
+// a rotation + offset in the horizontal plane, and a height offset that also
+// tells us which floor you're on.
+const phone = { pose: null, hist: [], lastReceived: null, cal1: null, trail: [] };
+const auto = { on: false, n: 0, last: null, lastRefresh: 0 };
+const POSE_STALE = 2.0; // seconds
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function phoneFresh() { return phone.pose && phone.pose.age < POSE_STALE; }
+function calibrated() { return !!(P.phoneCal && phone.pose && P.phoneCal.session === phone.pose.session); }
+function toHouse(p) {
+  const c = P.phoneCal, dx = p.x - c.am[0], dz = p.z - c.am[1];
+  const ca = Math.cos(c.angle), sa = Math.sin(c.angle);
+  const x = c.hm[0] + ca * dx - sa * dz, y = c.hm[1] + sa * dx + ca * dz;
+  const z = c.floor * fh() + c.h0 + (p.y - c.y0);
+  const floor = clamp(Math.floor(z / fh()), 0, P.house.floors - 1);
+  return { x: clamp(x, 0, P.house.width), y: clamp(y, 0, P.house.depth), floor, h: clamp(z - floor * fh(), 0, fh()) };
+}
+function poseNear(t) { // nearest pose to time t (performance.now ms)
+  let best = null;
+  for (const p of phone.hist) if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+  return best && Math.abs(best.t - t) < 700 ? best : null;
+}
+function avgPose(ms = 1000) { // average of the last second, to steady calibration points
+  const recent = phone.hist.filter(p => p.ok && p.t > performance.now() - ms);
+  if (!recent.length) return null;
+  const m = k => recent.reduce((a, p) => a + p[k], 0) / recent.length;
+  return { x: m('x'), y: m('y'), z: m('z'), session: recent[recent.length - 1].session };
+}
+async function pollPose() {
+  if (ui.server) {
+    try {
+      const j = await (await fetch('/api/pose')).json();
+      if (j) {
+        if (j.received !== phone.lastReceived) {
+          phone.lastReceived = j.received;
+          const pose = { t: performance.now() - j.age * 1000, x: j.x, y: j.y, z: j.z, ok: j.ok, state: j.state, session: j.session, age: j.age };
+          phone.hist.push(pose);
+          while (phone.hist.length && phone.hist[0].t < performance.now() - 10000) phone.hist.shift();
+          phone.pose = pose;
+          followPhone(pose);
+        } else if (phone.pose) phone.pose.age = j.age;
+      }
+    } catch {}
+    phoneUI();
+  }
+  setTimeout(pollPose, phone.pose ? 200 : 1500);
+}
+function followPhone(pose) {
+  if (!calibrated() || !pose.ok) return;
+  const hp = toHouse(pose);
+  if (hp.floor !== ui.floor) setFloor(hp.floor);
+  ui.pos = { x: hp.x, y: hp.y }; ui.posH = hp.h;
+  const last = phone.trail[phone.trail.length - 1];
+  if (!last || last.floor !== hp.floor || Math.hypot(last.x - hp.x, last.y - hp.y) > 0.1) {
+    phone.trail.push(hp); if (phone.trail.length > 2000) phone.trail.shift();
+  }
+  draw2D(); updateMarker3D();
+}
+let lastPhoneText = '';
+function phoneUI() {
+  let txt, err = false;
+  if (!phone.pose) { txt = 'No iPhone connected. Start the WiFi Tracker app (see README).'; err = false; }
+  else if (!phoneFresh()) { txt = `iPhone last seen ${Math.round(phone.pose.age)} s ago. Is the app still tracking?`; err = true; }
+  else { txt = `iPhone connected · ${phone.pose.state}`; err = !phone.pose.ok; }
+  if (txt !== lastPhoneText) { $('phoneStatus').textContent = txt; $('phoneStatus').className = 'status' + (err ? ' err' : ''); lastPhoneText = txt; }
+  const cal = calibrated();
+  const calTxt = cal ? `Calibrated ✓ (distance check ${P.phoneCal.scale.toFixed(2)}, ideal 1.00). Position follows the phone.`
+    : phone.cal1 ? 'Point 1 set. Walk 3 m+ to a second spot, click it, press Set point 2.'
+    : P.phoneCal && phone.pose ? 'The phone restarted tracking, so please recalibrate.'
+    : 'Not calibrated.';
+  if ($('calStatus').textContent !== calTxt) $('calStatus').textContent = calTxt;
+  $('cal1Btn').textContent = cal ? 'Recalibrate' : 'Set point 1';
+  $('cal2Btn').disabled = !phone.cal1;
+  $('autoBtn').disabled = !cal && !auto.on;
+}
+function setCalPoint(n) {
+  if (auto.on) { setStatus('Stop auto-sampling before calibrating.', true); return; }
+  if (n === 1 && calibrated()) { // "Recalibrate"
+    P.phoneCal = null; phone.cal1 = null; ui.posH = null; phone.trail = []; save(); phoneUI();
+    setStatus('Calibration cleared. Stand at a known spot, click it on the plan, press Set point 1.');
+    return;
+  }
+  if (!phoneFresh() || !phone.pose.ok) { setStatus('Need a live iPhone position with "Tracking OK" first.', true); return; }
+  if (!ui.pos) { setStatus('Click the plan where you (and the phone) are standing first.', true); return; }
+  const a = avgPose(); if (!a) { setStatus('Hold still for a second, then try again.', true); return; }
+  const pt = { house: { ...ui.pos }, ar: a, floor: ui.floor };
+  if (n === 1) {
+    phone.cal1 = pt; P.phoneCal = null;
+    setStatus('Point 1 set. Walk at least 3 m to another spot you can find on the plan, click it, press Set point 2.');
+  } else {
+    const p1 = phone.cal1;
+    if (!p1) return;
+    if (p1.ar.session !== a.session) { phone.cal1 = null; setStatus('The phone restarted tracking. Set point 1 again.', true); phoneUI(); return; }
+    if (p1.floor !== pt.floor) { setStatus('Both calibration points must be on the same floor.', true); return; }
+    const hx = pt.house.x - p1.house.x, hy = pt.house.y - p1.house.y;
+    const ax = a.x - p1.ar.x, az = a.z - p1.ar.z;
+    const hd = Math.hypot(hx, hy), ad = Math.hypot(ax, az);
+    if (hd < 2 || ad < 2) { setStatus(`Points are too close (${fmtU(Math.min(hd, ad))} ${P.units}). Use spots at least 3 m (10 ft) apart.`, true); return; }
+    P.phoneCal = {
+      session: a.session,
+      angle: Math.atan2(hy, hx) - Math.atan2(az, ax),
+      am: [(a.x + p1.ar.x) / 2, (a.z + p1.ar.z) / 2],
+      hm: [(pt.house.x + p1.house.x) / 2, (pt.house.y + p1.house.y) / 2],
+      y0: (a.y + p1.ar.y) / 2, h0: P.deviceHeight, floor: pt.floor,
+      scale: hd / ad,
+    };
+    phone.cal1 = null; phone.trail = [];
+    const off = Math.abs(P.phoneCal.scale - 1) > 0.15;
+    setStatus(off ? `Calibrated, but the distances disagree by ${Math.round(Math.abs(P.phoneCal.scale - 1) * 100)}%. Check the house size and where you clicked, then recalibrate.`
+                  : 'Calibrated. Your position now follows the iPhone. Press Auto-sample (A) and walk the house.', off);
+    save();
+  }
+  phoneUI();
+}
+async function autoLoop() {
+  while (auto.on) {
+    const a = performance.now();
+    try {
+      const j = await readSignal(1);
+      const tm = (a + performance.now()) / 2;
+      if (!auto.on) break;
+      showLive(j);
+      const pose = poseNear(tm);
+      if (!calibrated()) { setStatus('Lost calibration (the phone restarted tracking). Recalibrate to continue.', true); }
+      else if (!pose) setStatus('Waiting for the iPhone position…', true);
+      else if (!pose.ok) setStatus(`iPhone: ${pose.state}. Sampling paused.`, true);
+      else {
+        const hp = toHouse(pose), L = auto.last;
+        const moved = !L || L.floor !== hp.floor || Math.hypot(hp.x - L.x, hp.y - L.y, hp.h - L.h) >= P.autoSpacing || Date.now() - L.t > 5000;
+        if (moved) {
+          P.samples.push({ x: +hp.x.toFixed(2), y: +hp.y.toFixed(2), floor: hp.floor, h: +hp.h.toFixed(2),
+                           dbm: +j.dbm.toFixed(1), t: Date.now(), ssid: j.ssid || undefined, auto: true });
+          auto.n++; auto.last = { ...hp, t: Date.now() };
+          if (performance.now() - auto.lastRefresh > 1000) { auto.lastRefresh = performance.now(); changed(); }
+        }
+        setStatus(`Auto-sampling · ${auto.n} samples · last ${Math.round(j.dbm)} dBm (${quality(j.dbm)}). Press A or Esc to stop.`);
+      }
+    } catch (e) { setStatus('Could not read signal: ' + e.message, true); }
+    const dt = performance.now() - a;
+    if (dt < 500) await sleep(500 - dt);
+  }
+}
+function startAuto() {
+  if (auto.on) return;
+  if (walk.on) { setStatus('Stop walk mode first.', true); return; }
+  if (!calibrated()) { setStatus('Calibrate the iPhone first (Set point 1 and 2).', true); return; }
+  Object.assign(auto, { on: true, n: 0, last: null, lastRefresh: 0 });
+  $('autoBtn').innerHTML = 'Stop <kbd>A</kbd>'; $('autoBtn').classList.remove('primary'); $('takeBtn').disabled = true;
+  autoLoop();
+}
+function stopAuto() {
+  if (!auto.on) return;
+  auto.on = false;
+  $('autoBtn').innerHTML = 'Auto-sample <kbd>A</kbd>'; $('autoBtn').classList.add('primary'); $('takeBtn').disabled = false;
+  changed(); setStatus(`Auto-sampling stopped: ${auto.n} samples added.`);
 }
 
 // ---------------------------------------------------------------- 2D plan
@@ -673,6 +853,17 @@ function draw2D() {
     ctx.fillText(here ? 'Router' : `Router (${floorName(P.router.floor).toLowerCase()})`, px, py + 24);
     ctx.globalAlpha = 1;
   }
+  // iPhone trail on this floor
+  if (calibrated() && phone.trail.length > 1) {
+    ctx.strokeStyle = theme.accent; ctx.globalAlpha = 0.45; ctx.lineWidth = 1.5; ctx.beginPath();
+    let prev = null;
+    for (const q of phone.trail) {
+      const [px, py] = m2px(q.x, q.y);
+      if (q.floor !== ui.floor) { prev = null; continue; }
+      prev ? ctx.lineTo(px, py) : ctx.moveTo(px, py); prev = q;
+    }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
   // walk path so far, and the leg in progress
   if (walk.on && ui.pos) {
     ctx.strokeStyle = theme.accent; ctx.lineWidth = 2; ctx.beginPath();
@@ -702,6 +893,7 @@ function draw2D() {
   } else {
     ro.textContent = ui.mode === 'router' ? 'Click where the router is'
       : walk.on ? 'Walking · click where you are at each corner · Esc to stop'
+      : calibrated() ? (auto.on ? 'Auto-sampling · position follows the iPhone' : 'Position follows the iPhone · A to auto-sample')
       : ui.pos ? 'Click to move · Space to sample · W to walk' : 'Click to set your position';
   }
 }
@@ -721,8 +913,10 @@ cv.addEventListener('click', e => {
     changed();
   } else if (walk.on) {
     walkTo(p);
+  } else if (calibrated() && phoneFresh()) {
+    setStatus('Your position follows the iPhone. Press Recalibrate if it looks off.');
   } else {
-    ui.pos = p; draw2D(); updateMarker3D();
+    ui.pos = p; ui.posH = null; draw2D(); updateMarker3D();
   }
 });
 
@@ -911,7 +1105,7 @@ function syncInputs() {
   $('units').value = P.units;
   $('floors').value = P.house.floors;
   $('houseW').value = fmtU(P.house.width); $('houseD').value = fmtU(P.house.depth); $('floorH').value = fmtU(P.house.floorHeight);
-  $('devH').value = fmtU(P.deviceHeight); $('routerH').value = fmtU(P.routerHeight); $('nRead').value = P.samplesPerPoint;
+  $('devH').value = fmtU(P.deviceHeight); $('routerH').value = fmtU(P.routerHeight); $('nRead').value = P.samplesPerPoint; $('autoSpacing').value = fmtU(P.autoSpacing);
   $('vMin').value = P.viz.min; $('vMid').value = P.viz.mid; $('vMax').value = P.viz.max;
   $('cloudChk').checked = P.viz.cloud; $('cloudScope').value = P.viz.cloudScope; $('cloudFilter').value = P.viz.filter;
   $('vRes').value = fmtU(P.viz.res); $('vSize').value = fmtU(P.viz.size, 2); $('vOpac').value = P.viz.opacity;
@@ -960,6 +1154,10 @@ $('floorUp').onclick = () => setFloor(ui.floor + 1);
 $('floorDown').onclick = () => setFloor(ui.floor - 1);
 $('takeBtn').onclick = takeSample;
 $('walkBtn').onclick = () => walk.on ? stopWalk() : startWalk();
+$('cal1Btn').onclick = () => setCalPoint(1);
+$('cal2Btn').onclick = () => setCalPoint(2);
+$('autoBtn').onclick = () => auto.on ? stopAuto() : startAuto();
+num('autoSpacing', v => P.autoSpacing = Math.max(0.1, fromU(v)));
 $('manualBtn').onclick = () => {
   const v = parseFloat($('manualDbm').value);
   if (!Number.isFinite(v) || v > 0 || v < -120) { setStatus('Enter a dBm value between -120 and 0, e.g. -62.', true); return; }
@@ -1021,7 +1219,8 @@ addEventListener('keydown', e => {
   };
   if (e.code === 'Space') { e.preventDefault(); takeSample(); }
   else if (e.key === 'w' || e.key === 'W') { if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); walk.on ? stopWalk() : startWalk(); } }
-  else if (e.key === 'Escape') stopWalk();
+  else if (e.key === 'a' || e.key === 'A') { if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); auto.on ? stopAuto() : startAuto(); } }
+  else if (e.key === 'Escape') { stopWalk(); stopAuto(); }
   else if (e.key === 'ArrowLeft') nudge(-step, 0);
   else if (e.key === 'ArrowRight') nudge(step, 0);
   else if (e.key === 'ArrowUp') nudge(0, -step);
@@ -1050,7 +1249,7 @@ new ResizeObserver(resize3D).observe(tcv.parentElement);
   syncInputs(); layout2D(); rebuildHouse3D(); resize3D(); resetCamera();
   changed();
   if (!P.router) { setMode('router'); setStatus('Start by placing the router: choose its floor, then click its spot on the plan.'); }
-  livePoll();
+  livePoll(); pollPose();
 })();
 </script>
 </body>

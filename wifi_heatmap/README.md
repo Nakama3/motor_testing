@@ -50,6 +50,51 @@ Instead of one click per sample, sample continuously while you walk:
 On macOS, install CoreWLAN first (`pip install pyobjc-framework-CoreWLAN`). Without it each
 reading takes a few seconds, so a walk only gets a handful of samples.
 
+## iPhone tracking (fully automatic position)
+
+iOS doesn't let apps read WiFi signal strength, so the MacBook still measures the signal.
+The iPhone tracks where you are with ARKit (camera + motion sensors, accurate to a few cm)
+and streams that to the laptop. Your position, and the floor you're on, then update by
+themselves, and **Auto-sample** logs a reading every 0.3 m you move.
+
+### 1. Install the WiFi Tracker app (one time)
+
+You need Xcode (free, Mac App Store) and the iPhone's USB cable.
+
+1. Double-click `wifi_heatmap/iphone/WiFiTracker.swiftpm` to open it in Xcode.
+2. **Xcode → Settings → Accounts**: add your Apple ID (a free one works).
+3. Click the project in the left sidebar, then the **WiFi Tracker** target → **Signing & Capabilities**,
+   and set **Team** to your Personal Team.
+4. Plug in the iPhone, tap **Trust**, and turn on **Settings → Privacy & Security → Developer Mode**
+   (the phone restarts).
+5. Pick your iPhone as the run destination at the top of Xcode and press **Run** (⌘R).
+6. If the phone says the developer isn't trusted: **Settings → General → VPN & Device Management**
+   → your Apple ID → **Trust**.
+7. When the app opens, allow **Camera** and **Local Network** access.
+
+With a free Apple ID the app stops opening after 7 days. Press Run in Xcode again to reinstall it.
+
+If Xcode won't open the `.swiftpm`: create a new **iOS App** project (SwiftUI), replace its Swift
+files with the three in that folder, and add `NSCameraUsageDescription` and
+`NSLocalNetworkUsageDescription` to the target's Info settings.
+
+### 2. Map the house
+
+1. On the Mac: `python3 server.py --host 0.0.0.0` (allow incoming connections if macOS asks).
+   It prints the address to type into the phone app, e.g. `192.168.1.23:8000`.
+   While it runs, anyone on your WiFi can open the page, so stop it when you're done.
+2. In the phone app, enter that address and tap **Start tracking**. The web page should show
+   *iPhone connected · Tracking OK*.
+3. **Calibrate**, keeping the phone next to the laptop:
+   - Stand at a spot you can find on the plan (a doorway or a corner), click it, press **Set point 1**.
+   - Walk at least 3 m (10 ft) to a second spot on the same floor, click it, press **Set point 2**.
+   - The "distance check" should be close to 1.00. If it isn't, check the house dimensions and recalibrate.
+4. Press **A** (Auto-sample) and walk the whole house, including stairs, at a normal pace. Press **A** or **Esc** to stop.
+
+Carry the phone with its camera facing forward at about laptop height. Tracking needs to see
+the room, so don't point it at the floor, and keep the lights on. If the phone app restarts
+tracking, its coordinates reset and the page asks you to calibrate again.
+
 ## Tips
 
 - Set **Width / Depth** to your house's outer dimensions first, and optionally upload a

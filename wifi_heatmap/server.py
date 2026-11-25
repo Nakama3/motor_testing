@@ -166,12 +166,27 @@ def read_rssi(demo=False, query=None):
 # HTTP server
 # --------------------------------------------------------------------------
 
+def lan_ip():
+    """Best guess at this machine's address on the home network."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))  # no packet is sent
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     demo = False
     project_file = os.path.join(HERE, "project.json")
+    pose = None  # latest pose from the iPhone tracker app
 
     def log_message(self, fmt, *args):  # quieter console
-        if "/api/rssi" not in (args[0] if args else ""):
+        line = str(args[0]) if args else ""
+        if "/api/rssi" not in line and "/api/pose" not in line:
             sys.stderr.write("%s\n" % (fmt % args))
 
     def _send(self, code, body, ctype="application/json"):
@@ -205,6 +220,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "dbm": median, "readings": readings, "ssid": info["ssid"],
                 "method": info["method"], "demo": self.demo}))
+        if url.path == "/api/pose":
+            p = Handler.pose
+            if p is None:
+                return self._send(200, "null")
+            return self._send(200, json.dumps({**p, "age": round(time.time() - p["received"], 3)}))
         if url.path == "/api/project":
             if os.path.exists(self.project_file):
                 with open(self.project_file, "rb") as f:
@@ -213,10 +233,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/project":
-            return self._send(404, json.dumps({"error": "not found"}))
+        path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
+        if path == "/api/pose":  # from the iPhone tracker app
+            try:
+                j = json.loads(body)
+                Handler.pose = {"x": float(j["x"]), "y": float(j["y"]), "z": float(j["z"]),
+                                "ok": bool(j.get("ok", True)), "state": str(j.get("state", ""))[:80],
+                                "session": str(j.get("session", ""))[:64], "received": time.time()}
+            except (ValueError, KeyError, TypeError):
+                return self._send(400, json.dumps({"error": "bad pose"}))
+            return self._send(200, json.dumps({"ok": True}))
+        if path != "/api/project":
+            return self._send(404, json.dumps({"error": "not found"}))
         try:
             json.loads(body)
         except ValueError:
@@ -253,6 +283,11 @@ def main():
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Open http://localhost:{args.port}  (Ctrl+C to stop)")
+    if args.host in ("0.0.0.0", "::"):
+        ip = lan_ip()
+        print(f"iPhone tracker app: enter  {ip or '<this computer IP>'}:{args.port}  as the laptop address")
+    else:
+        print("To use the iPhone tracker app, restart with  --host 0.0.0.0")
     print(f"Samples auto-save to {Handler.project_file}")
     try:
         srv.serve_forever()
