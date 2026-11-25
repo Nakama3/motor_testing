@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Heatmap</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --surface-1: #ffffff;
+  --surface-2: #f0f0ee;
+  --border: #dddcd8;
+  --text-primary: #191919;
+  --text-secondary: #666666;
+  --accent: #257de0;
+  --accent-ink: #ffffff;
+  --danger: #c83233;
+  --grid: rgba(0,0,0,0.08);
+  --outline: rgba(0,0,0,0.55);
+  /* diverging signal ramp: weak (red) <- neutral gray -> strong (blue) */
+  --div-weak: #d93a3b;
+  --div-mid: #dcdcdc;
+  --div-strong: #1b64be;
+  --scene: #f7f7f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111111;
+    --surface-1: #191919;
+    --surface-2: #222222;
+    --border: #333333;
+    --text-primary: #efefef;
+    --text-secondary: #9c9c9c;
+    --accent: #338ced;
+    --accent-ink: #ffffff;
+    --danger: #eb6263;
+    --grid: rgba(255,255,255,0.08);
+    --outline: rgba(255,255,255,0.55);
+    --div-weak: #eb6263;
+    --div-mid: #5c5c5c;
+    --div-strong: #6aabf1;
+    --scene: #141414;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111111;
+  --surface-1: #191919;
+  --surface-2: #222222;
+  --border: #333333;
+  --text-primary: #efefef;
+  --text-secondary: #9c9c9c;
+  --accent: #338ced;
+  --accent-ink: #ffffff;
+  --danger: #eb6263;
+  --grid: rgba(255,255,255,0.08);
+  --outline: rgba(255,255,255,0.55);
+  --div-weak: #eb6263;
+  --div-mid: #5c5c5c;
+  --div-strong: #6aabf1;
+  --scene: #141414;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text-primary);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+}
+header {
+  display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+.pill {
+  display: inline-flex; align-items: baseline; gap: 8px; padding: 4px 12px;
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.pill b { font-size: 18px; }
+.muted { color: var(--text-secondary); font-size: 12px; }
+.spacer { flex: 1; }
+button, select, input {
+  font: inherit; color: inherit; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+}
+input[type=number] { width: 100%; font-variant-numeric: tabular-nums; }
+button { cursor: pointer; }
+button:hover { border-color: var(--text-secondary); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--danger); }
+button.primary kbd { background: rgba(255,255,255,.18); color: inherit; border-color: rgba(255,255,255,.45); }
+button:disabled { opacity: .5; cursor: progress; }
+
+main { display: grid; grid-template-columns: 330px 1fr; min-height: 0; }
+aside {
+  overflow-y: auto; background: var(--surface-1); border-right: 1px solid var(--border);
+  padding: 4px 16px 24px;
+}
+section { border-bottom: 1px solid var(--border); padding: 12px 0; }
+section:last-child { border-bottom: 0; }
+section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-secondary); margin: 0 0 10px; font-weight: 600; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+label { display: block; font-size: 12px; color: var(--text-secondary); }
+label > input, label > select { margin-top: 3px; width: 100%; }
+.check { display: flex; align-items: center; gap: 6px; color: var(--text-primary); font-size: 13px; margin-bottom: 8px; }
+.check input { width: auto; margin: 0; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 10px; }
+.seg button { border: 0; border-radius: 0; background: var(--surface-2); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.floorsel { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center; margin-bottom: 10px; }
+.floorsel span { text-align: center; font-weight: 600; }
+#takeBtn { width: 100%; padding: 10px; font-size: 15px; margin: 4px 0 8px; }
+.hint { font-size: 12px; color: var(--text-secondary); margin: 6px 0 0; }
+.status { font-size: 12px; margin-top: 6px; min-height: 16px; }
+.status.err { color: var(--danger); }
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th { text-align: left; color: var(--text-secondary); font-weight: 500; padding: 3px 4px; border-bottom: 1px solid var(--border); }
+td { padding: 3px 4px; border-bottom: 1px solid var(--border); }
+td.num, th.num { text-align: right; }
+td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+td button { padding: 0 6px; font-size: 12px; }
+.tablewrap { max-height: 260px; overflow-y: auto; }
+
+.content { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; }
+.legendbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 16px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.legend { display: flex; align-items: center; gap: 8px; }
+.legend .ramp { width: 220px; height: 10px; border-radius: 5px; }
+.legend .ticks { display: flex; justify-content: space-between; width: 220px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.panes { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); min-height: 0; }
+.pane { position: relative; background: var(--surface-1); min-height: 0; min-width: 0; overflow: hidden; }
+.pane .title {
+  position: absolute; top: 8px; left: 12px; z-index: 2; font-size: 12px; font-weight: 600;
+  color: var(--text-secondary); pointer-events: none;
+}
+.pane .readout {
+  position: absolute; bottom: 8px; left: 12px; z-index: 2; font-size: 12px;
+  color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; pointer-events: none; font-variant-numeric: tabular-nums;
+}
+#plan, #three { display: block; width: 100%; height: 100%; }
+#plan { cursor: crosshair; }
+#tip {
+  position: fixed; z-index: 10; pointer-events: none; display: none;
+  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  font-variant-numeric: tabular-nums;
+}
+#tip b { font-size: 14px; }
+kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface-2); }
+
+@media (max-width: 1200px) {
+  .panes { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
+@media (max-width: 760px) {
+  body { overflow: auto; height: auto; display: block; }
+  main { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--border); overflow: visible; }
+  .panes { grid-template-rows: 70vh 70vh; }
+  header { flex-wrap: wrap; gap: 8px; }
+  .legend .ramp, .legend .ticks { width: 160px; }
+}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>WiFi Heatmap</h1>
+  <div class="pill" title="Current signal reading from this computer"><b id="liveDbm">—</b><span id="liveQual" class="muted"></span></div>
+  <span id="liveInfo" class="muted"></span>
+  <div class="spacer"></div>
+  <label class="check" style="margin:0"><input type="checkbox" id="liveChk" checked> Live reading</label>
+  <button id="themeBtn" title="Toggle light/dark">Theme</button>
+</header>
+
+<main>
+<aside>
+  <section>
+    <h2>1 · Sampling</h2>
+    <div class="seg">
+      <button id="modePos" class="on">Set my position</button>
+      <button id="modeRouter">Place router</button>
+    </div>
+    <div class="floorsel">
+      <button id="floorDown" title="Floor down (PgDn)">‹</button>
+      <span id="floorLbl">Floor 1</span>
+      <button id="floorUp" title="Floor up (PgUp)">›</button>
+    </div>
+    <div class="row3">
+      <label>Device height<input type="number" id="devH" step="0.1" min="0"></label>
+      <label>Router height<input type="number" id="routerH" step="0.1" min="0"></label>
+      <label>Readings / pt<input type="number" id="nRead" step="1" min="1" max="20"></label>
+    </div>
+    <button id="takeBtn" class="primary">Take sample <kbd>Space</kbd></button>
+    <div class="row" style="grid-template-columns: 1fr auto">
+      <input type="number" id="manualDbm" placeholder="Manual dBm, e.g. -62" step="1">
+      <button id="manualBtn">Add manual</button>
+    </div>
+    <div id="status" class="status"></div>
+    <p class="hint">Click the floor plan where you're standing, then take a sample. Arrow keys nudge your position; <kbd>PgUp</kbd>/<kbd>PgDn</kbd> change floor. Walk the whole house — corners and far rooms matter most.</p>
+  </section>
+
+  <section>
+    <h2>2 · House</h2>
+    <div class="row">
+      <label>Units<select id="units"><option value="m">meters</option><option value="ft">feet</option></select></label>
+      <label>Floors<input type="number" id="floors" min="1" max="6" step="1"></label>
+    </div>
+    <div class="row3">
+      <label>Width<input type="number" id="houseW" min="1" step="0.5"></label>
+      <label>Depth<input type="number" id="houseD" min="1" step="0.5"></label>
+      <label>Floor height<input type="number" id="floorH" min="1.5" step="0.1"></label>
+    </div>
+    <label>Floor plan image for <span id="planFloorLbl">floor 1</span> (optional, stretched to width × depth)
+      <input type="file" id="planFile" accept="image/*">
+    </label>
+    <button id="planClear" style="margin-top:6px">Remove image</button>
+  </section>
+
+  <section>
+    <h2>3 · Map display</h2>
+    <div class="row3">
+      <label>Weakest<input type="number" id="vMin" step="1"></label>
+      <label>Midpoint<input type="number" id="vMid" step="1"></label>
+      <label>Strongest<input type="number" id="vMax" step="1"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="cloudChk"> Show interpolated 3D cloud</label>
+    <div class="row">
+      <label>Cloud floors<select id="cloudScope"><option value="all">All floors</option><option value="floor">Current floor</option></select></label>
+      <label>Show<select id="cloudFilter"><option value="all">All signal</option><option value="weak">Below midpoint</option><option value="strong">At/above midpoint</option></select></label>
+    </div>
+    <div class="row3">
+      <label>Spacing<input type="number" id="vRes" step="0.1" min="0.2"></label>
+      <label>Point size<input type="number" id="vSize" step="0.05" min="0.05"></label>
+      <label>Opacity<input type="number" id="vOpac" step="0.05" min="0.05" max="1"></label>
+    </div>
+    <p class="hint">Between samples the map uses a path-loss model fitted to your readings (signal falling off with distance from the router and with floors in between), corrected toward nearby measurements.</p>
+  </section>
+
+  <section>
+    <h2>4 · Samples (<span id="nSamples">0</span>)</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>#</th><th>Floor</th><th class="num">x</th><th class="num">y</th><th class="num">dBm</th><th></th></tr></thead>
+        <tbody id="sampleRows"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="undoBtn">Undo last</button>
+      <button id="clearBtn" class="danger">Clear samples</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>5 · Data</h2>
+    <div class="row">
+      <button id="exportBtn">Export JSON</button>
+      <button id="importBtn">Import JSON</button>
+    </div>
+    <div class="row">
+      <button id="csvBtn">Export CSV</button>
+      <button id="resetBtn" class="danger">Reset project</button>
+    </div>
+    <input type="file" id="importFile" accept=".json,application/json" hidden>
+    <div id="saveStatus" class="muted"></div>
+  </section>
+</aside>
+
+<div class="content">
+  <div class="legendbar">
+    <div class="legend">
+      <span>Signal (dBm)</span>
+      <div>
+        <div class="ramp" id="ramp"></div>
+        <div class="ticks"><span id="tMin"></span><span id="tMid"></span><span id="tMax"></span></div>
+      </div>
+    </div>
+    <span class="muted">Red = weaker than the midpoint, blue = stronger. −67 dBm is a common minimum for reliable video calls.</span>
+  </div>
+  <div class="panes">
+    <div class="pane" id="planPane">
+      <div class="title" id="planTitle">Floor plan · floor 1 (top-down)</div>
+      <canvas id="plan"></canvas>
+      <div class="readout" id="planReadout">Click to set your position</div>
+    </div>
+    <div class="pane" id="threePane">
+      <div class="title">3D view · drag to orbit, scroll to zoom, right-drag to pan</div>
+      <canvas id="three"></canvas>
+      <div class="readout" id="threeReadout">Hover a sample for details</div>
+    </div>
+  </div>
+</div>
+</main>
+<div id="tip"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const FT = 3.28084;
+
+// ---------------------------------------------------------------- state
+const defaultProject = () => ({
+  version: 1,
+  units: 'm',
+  house: { width: 12, depth: 9, floors: 1, floorHeight: 2.7 },
+  router: null,                 // { x, y, floor, h } in meters
+  deviceHeight: 1.0,
+  routerHeight: 1.0,
+  samplesPerPoint: 5,
+  samples: [],                  // { x, y, floor, h, dbm, t, ssid, manual }
+  floorplans: {},               // floor index -> dataURL
+  viz: { min: -90, mid: -67, max: -35, res: 0.5, size: 0.35, opacity: 0.55,
+         cloud: true, cloudScope: 'all', filter: 'all' },
+});
+let P = defaultProject();
+const ui = { mode: 'position', floor: 0, pos: null, server: false, busy: false, hover2d: null };
+
+// ---------------------------------------------------------------- units
+const toU = m => P.units === 'ft' ? m * FT : m;
+const fromU = v => P.units === 'ft' ? v / FT : v;
+const fmtU = (m, d = 1) => toU(m).toFixed(d);
+const floorName = f => `Floor ${f + 1}`;
+
+// ---------------------------------------------------------------- color
+const theme = {};
+function hexToRgb(h) {
+  h = h.trim().replace('#', '');
+  return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+}
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ['div-weak', 'div-mid', 'div-strong', 'scene', 'text-primary', 'text-secondary', 'surface-1', 'grid', 'outline', 'accent'])
+    theme[k] = cs.getPropertyValue('--' + k).trim();
+  theme.weakRgb = hexToRgb(theme['div-weak']);
+  theme.midRgb = hexToRgb(theme['div-mid']);
+  theme.strongRgb = hexToRgb(theme['div-strong']);
+}
+// sRGB <-> linear so the blend through gray stays even
+const lin = c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+const gam = c => c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055;
+function colorFor(dbm) {
+  const { min, mid, max } = P.viz;
+  let t, end;
+  if (dbm < mid) { t = Math.min(1, (mid - dbm) / Math.max(1, mid - min)); end = theme.weakRgb; }
+  else { t = Math.min(1, (dbm - mid) / Math.max(1, max - mid)); end = theme.strongRgb; }
+  return theme.midRgb.map((m, i) => gam(lin(m) + (lin(end[i]) - lin(m)) * t));
+}
+const cssColor = rgb => `rgb(${rgb.map(v => Math.round(v * 255)).join(',')})`;
+function quality(dbm) {
+  if (dbm >= -50) return 'excellent';
+  if (dbm >= -60) return 'good';
+  if (dbm >= -67) return 'fair';
+  if (dbm >= -75) return 'weak';
+  return 'poor';
+}
+
+// ---------------------------------------------------------------- model
+const fh = () => P.house.floorHeight;
+const routerPos = () => P.router ? [P.router.x, P.router.y, P.router.floor * fh() + P.router.h] : null;
+const samplePos = s => [s.x, s.y, s.floor * fh() + s.h];
+
+function solve(A, b) { // small Gaussian elimination
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = 0; r < n; r++) if (r !== c) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((r, i) => r[n] / r[i]);
+}
+
+let model = null, cache = [];
+function fitModel() {
+  const S = P.samples;
+  if (!S.length) { model = null; cache = []; return; }
+  const mean = S.reduce((a, s) => a + s.dbm, 0) / S.length;
+  const rp = routerPos();
+  model = { a: mean, b: 0, c: 0 };
+  if (rp && S.length >= 3) {
+    const useFloors = S.some(s => s.floor !== P.router.floor) && new Set(S.map(s => s.floor)).size > 1;
+    const k = useFloors ? 3 : 2;
+    const A = Array.from({ length: k }, () => Array(k).fill(0)), y = Array(k).fill(0);
+    for (const s of S) {
+      const f = features(samplePos(s), s.floor).slice(0, k);
+      for (let i = 0; i < k; i++) { y[i] += f[i] * s.dbm; for (let j = 0; j < k; j++) A[i][j] += f[i] * f[j]; }
+    }
+    for (let i = 1; i < k; i++) A[i][i] += 0.5; // light ridge keeps few-sample fits sane
+    const sol = solve(A, y);
+    if (sol) {
+      let [a, b, c = 0] = sol;
+      // keep it physical: signal must fall with distance and through floors
+      b = Math.max(-45, Math.min(-12, b));
+      c = Math.max(-25, Math.min(0, c));
+      // re-fit intercept with clamped slopes
+      a = S.reduce((acc, s) => { const f = features(samplePos(s), s.floor); return acc + s.dbm - b * f[1] - c * f[2]; }, 0) / S.length;
+      model = { a, b, c };
+    }
+  }
+  cache = S.map(s => { const p = samplePos(s); return { p, r: s.dbm - modelAt(p, s.floor) }; });
+}
+function features(p, floor) {
+  const rp = routerPos();
+  if (!rp) return [1, 0, 0];
+  const d = Math.max(0.5, Math.hypot(p[0] - rp[0], p[1] - rp[1], p[2] - rp[2]));
+  return [1, Math.log10(d), Math.abs(floor - P.router.floor)];
+}
+function modelAt(p, floor) {
+  const f = features(p, floor);
+  return model.a + model.b * f[1] + model.c * f[2];
+}
+const VERT = 2.0;            // vertical distance counts double (ceilings attenuate)
+const PRIOR = 1 / (2.5 * 2.5); // residuals fade to the model ~2.5 m from any sample
+function estimate(x, y, z) {
+  if (!model) return null;
+  const floor = Math.max(0, Math.min(P.house.floors - 1, Math.floor(z / fh())));
+  let num = 0, den = PRIOR;
+  for (const c of cache) {
+    const dx = x - c.p[0], dy = y - c.p[1], dz = (z - c.p[2]) * VERT;
+    const w = 1 / (dx * dx + dy * dy + dz * dz + 0.02);
+    num += w * c.r; den += w;
+  }
+  return modelAt([x, y, z], floor) + num / den;
+}
+
+// ---------------------------------------------------------------- persistence
+let saveTimer = null;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const body = JSON.stringify(P);
+    let where = [];
+    if (ui.server) {
+      try { const r = await fetch('/api/project', { method: 'POST', body }); if (r.ok) where.push('project.json'); } catch {}
+    }
+    try { localStorage.setItem('wifiHeatmap', body); where.push('browser'); } catch {}
+    $('saveStatus').textContent = where.length ? `Saved (${where.join(' + ')}) at ${new Date().toLocaleTimeString()}` : 'Not saved — export JSON to keep your data';
+  }, 400);
+}
+function adopt(obj) {
+  const d = defaultProject();
+  P = { ...d, ...obj, house: { ...d.house, ...(obj.house || {}) }, viz: { ...d.viz, ...(obj.viz || {}) },
+        samples: Array.isArray(obj.samples) ? obj.samples : [], floorplans: obj.floorplans || {} };
+  ui.floor = Math.min(ui.floor, P.house.floors - 1);
+  planImages.clear();
+}
+async function load() {
+  let loaded = null;
+  try {
+    const r = await fetch('/api/project');
+    if (r.ok) { ui.server = true; loaded = await r.json(); }
+  } catch {}
+  if (!loaded) { try { loaded = JSON.parse(localStorage.getItem('wifiHeatmap') || 'null'); } catch {} }
+  if (loaded) adopt(loaded);
+  if (!ui.server) setStatus('No server found — open this page via `python3 server.py` to read WiFi automatically. Manual entry still works.', true);
+}
+
+// ---------------------------------------------------------------- signal reading
+function setStatus(msg, err = false) { const el = $('status'); el.textContent = msg; el.className = 'status' + (err ? ' err' : ''); }
+function demoParams() {
+  const p = ui.pos, rp = routerPos();
+  if (!p) return '';
+  const z = ui.floor * fh() + P.deviceHeight;
+  const r = rp || [P.house.width / 2, P.house.depth / 2, 1];
+  return `&x=${p.x}&y=${p.y}&z=${z}&rx=${r[0]}&ry=${r[1]}&rz=${r[2]}`;
+}
+async function readSignal(n) {
+  const r = await fetch(`/api/rssi?n=${n}${demoParams()}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'read failed');
+  return j;
+}
+function showLive(j) {
+  $('liveDbm').textContent = `${Math.round(j.dbm)} dBm`;
+  $('liveQual').textContent = quality(j.dbm);
+  $('liveInfo').textContent = [j.ssid, j.method].filter(Boolean).join(' · ');
+}
+let livePending = false;
+async function livePoll() {
+  if ($('liveChk').checked && ui.server && !livePending && !ui.busy) {
+    livePending = true;
+    try { showLive(await readSignal(1)); } catch (e) { $('liveDbm').textContent = '—'; $('liveInfo').textContent = e.message; }
+    livePending = false;
+  }
+  setTimeout(livePoll, 1500);
+}
+
+function addSample(dbm, extra = {}) {
+  if (!ui.pos) { setStatus('Click the floor plan to mark where you are first.', true); return false; }
+  P.samples.push({ x: +ui.pos.x.toFixed(2), y: +ui.pos.y.toFixed(2), floor: ui.floor, h: P.deviceHeight,
+                   dbm: +(+dbm).toFixed(1), t: Date.now(), ...extra });
+  setStatus(`Sample ${P.samples.length}: ${Math.round(dbm)} dBm (${quality(dbm)}) at ${fmtU(ui.pos.x)}, ${fmtU(ui.pos.y)} ${P.units}, ${floorName(ui.floor).toLowerCase()}.`);
+  changed();
+  return true;
+}
+async function takeSample() {
+  if (ui.busy) return;
+  if (!ui.pos) { setStatus('Click the floor plan to mark where you are first.', true); return; }
+  if (!ui.server) { setStatus('No server: type a dBm value and use "Add manual".', true); return; }
+  ui.busy = true; $('takeBtn').disabled = true; $('takeBtn').textContent = 'Reading…';
+  try {
+    const j = await readSignal(P.samplesPerPoint);
+    showLive(j);
+    addSample(j.dbm, { ssid: j.ssid || undefined });
+  } catch (e) { setStatus('Could not read signal: ' + e.message, true); }
+  ui.busy = false; $('takeBtn').disabled = false; $('takeBtn').innerHTML = 'Take sample <kbd>Space</kbd>';
+}
+
+// ---------------------------------------------------------------- 2D plan
+const cv = $('plan'), ctx = cv.getContext('2d');
+const view = { s: 1, ox: 0, oy: 0, w: 0, h: 0 };
+const planImages = new Map();
+let heatCanvas = null;
+
+function planImage(f) {
+  const src = P.floorplans[f];
+  if (!src) return null;
+  let img = planImages.get(f);
+  if (!img || img.src !== src) { img = new Image(); img.onload = () => { draw2D(); rebuildHouse3D(); }; img.src = src; planImages.set(f, img); }
+  return img.complete && img.naturalWidth ? img : null;
+}
+function layout2D() {
+  const r = cv.parentElement.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  cv.width = Math.max(1, r.width * dpr); cv.height = Math.max(1, r.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  view.w = r.width; view.h = r.height;
+  const pad = 36, W = P.house.width, D = P.house.depth;
+  view.s = Math.max(1, Math.min((r.width - 2 * pad) / W, (r.height - 2 * pad - 20) / D));
+  view.ox = (r.width - W * view.s) / 2; view.oy = (r.height - D * view.s) / 2 + 6;
+}
+const m2px = (x, y) => [view.ox + x * view.s, view.oy + y * view.s];
+const px2m = (px, py) => [(px - view.ox) / view.s, (py - view.oy) / view.s];
+
+function buildHeat() {
+  heatCanvas = null;
+  if (!model) return;
+  const W = P.house.width, D = P.house.depth, step = 0.15;
+  const nx = Math.ceil(W / step), ny = Math.ceil(D / step);
+  const c = document.createElement('canvas'); c.width = nx; c.height = ny;
+  const g = c.getContext('2d'), img = g.createImageData(nx, ny);
+  const z = ui.floor * fh() + P.deviceHeight;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const v = estimate((i + 0.5) * step, (j + 0.5) * step, z);
+    const [r, gg, b] = colorFor(v), k = (j * nx + i) * 4;
+    img.data[k] = r * 255; img.data[k + 1] = gg * 255; img.data[k + 2] = b * 255; img.data[k + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  heatCanvas = c;
+}
+function draw2D() {
+  const W = P.house.width, D = P.house.depth;
+  ctx.clearRect(0, 0, view.w, view.h);
+  const [x0, y0] = m2px(0, 0), [x1, y1] = m2px(W, D);
+  ctx.fillStyle = theme['surface-1']; ctx.fillRect(0, 0, view.w, view.h);
+  const img = planImage(ui.floor);
+  if (img) { ctx.globalAlpha = 1; ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0); }
+  if (heatCanvas) {
+    ctx.globalAlpha = img ? 0.55 : 0.85; ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(heatCanvas, x0, y0, x1 - x0, y1 - y0); ctx.globalAlpha = 1;
+  }
+  // grid: 1 m, or 3 ft
+  const g = P.units === 'ft' ? 3 / FT : 1;
+  ctx.strokeStyle = theme.grid; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = g; x < W; x += g) { const [px] = m2px(x, 0); ctx.moveTo(px, y0); ctx.lineTo(px, y1); }
+  for (let y = g; y < D; y += g) { const [, py] = m2px(0, y); ctx.moveTo(x0, py); ctx.lineTo(x1, py); }
+  ctx.stroke();
+  ctx.strokeStyle = theme.outline; ctx.lineWidth = 1.5; ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  // dimension labels
+  ctx.fillStyle = theme['text-secondary']; ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.fillText(`${fmtU(W)} ${P.units}`, (x0 + x1) / 2, y1 + 16);
+  ctx.save(); ctx.translate(x0 - 12, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(`${fmtU(D)} ${P.units}`, 0, 0); ctx.restore();
+  // samples on this floor (ghost samples from other floors as small outlines)
+  for (const s of P.samples) {
+    const [px, py] = m2px(s.x, s.y);
+    if (s.floor !== ui.floor) continue;
+    ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2);
+    ctx.fillStyle = cssColor(colorFor(s.dbm)); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = theme['surface-1']; ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, py, 7.5, 0, Math.PI * 2); ctx.lineWidth = 1; ctx.strokeStyle = theme.outline; ctx.stroke();
+  }
+  // router
+  if (P.router) {
+    const [px, py] = m2px(P.router.x, P.router.y), here = P.router.floor === ui.floor;
+    ctx.globalAlpha = here ? 1 : 0.4;
+    ctx.fillStyle = theme['text-primary']; ctx.strokeStyle = theme['surface-1']; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px, py - 10); ctx.lineTo(px + 9, py); ctx.lineTo(px, py + 10); ctx.lineTo(px - 9, py); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = theme['text-primary']; ctx.lineWidth = 1.5;
+    for (const r of [15, 21]) { ctx.beginPath(); ctx.arc(px, py, r, -Math.PI * 0.8, -Math.PI * 0.2); ctx.stroke(); }
+    ctx.fillStyle = theme['text-primary']; ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(here ? 'Router' : `Router (${floorName(P.router.floor).toLowerCase()})`, px, py + 24);
+    ctx.globalAlpha = 1;
+  }
+  // you
+  if (ui.pos) {
+    const [px, py] = m2px(ui.pos.x, ui.pos.y);
+    ctx.strokeStyle = theme.accent; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 10, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px - 16, py); ctx.lineTo(px - 4, py); ctx.moveTo(px + 4, py); ctx.lineTo(px + 16, py);
+    ctx.moveTo(px, py - 16); ctx.lineTo(px, py - 4); ctx.moveTo(px, py + 4); ctx.lineTo(px, py + 16); ctx.stroke();
+    ctx.fillStyle = theme.accent; ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillText('You', px + 13, py - 11);
+  }
+  // hover readout
+  const h = ui.hover2d, ro = $('planReadout');
+  if (h) {
+    const near = P.samples.find(s => s.floor === ui.floor && Math.hypot((s.x - h.x) * view.s, (s.y - h.y) * view.s) < 9);
+    const est = estimate(h.x, h.y, ui.floor * fh() + P.deviceHeight);
+    ro.textContent = `${fmtU(h.x)}, ${fmtU(h.y)} ${P.units} · ` +
+      (near ? `measured ${near.dbm} dBm (${quality(near.dbm)})` : est != null ? `estimated ${Math.round(est)} dBm (${quality(est)})` : 'no samples yet');
+  } else {
+    ro.textContent = ui.mode === 'router' ? 'Click where the router is' : ui.pos ? 'Click to move · Space to sample' : 'Click to set your position';
+  }
+}
+function planEvent(e) {
+  const r = cv.getBoundingClientRect();
+  const [x, y] = px2m(e.clientX - r.left, e.clientY - r.top);
+  const inside = x >= 0 && y >= 0 && x <= P.house.width && y <= P.house.depth;
+  return inside ? { x, y } : null;
+}
+cv.addEventListener('mousemove', e => { ui.hover2d = planEvent(e); draw2D(); });
+cv.addEventListener('mouseleave', () => { ui.hover2d = null; draw2D(); });
+cv.addEventListener('click', e => {
+  const p = planEvent(e); if (!p) return;
+  if (ui.mode === 'router') {
+    P.router = { x: +p.x.toFixed(2), y: +p.y.toFixed(2), floor: ui.floor, h: P.routerHeight };
+    setMode('position'); setStatus('Router placed. Now click where you are and take samples.');
+    changed();
+  } else {
+    ui.pos = p; draw2D(); updateMarker3D();
+  }
+});
+
+// ---------------------------------------------------------------- 3D
+const tcv = $('three');
+const renderer = new THREE.WebGLRenderer({ canvas: tcv, antialias: true });
+renderer.setPixelRatio(devicePixelRatio || 1);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500);
+const controls = new OrbitControls(camera, tcv);
+controls.enableDamping = true;
+const houseG = new THREE.Group(), sampleG = new THREE.Group(), cloudG = new THREE.Group(), markG = new THREE.Group();
+scene.add(houseG, sampleG, cloudG, markG);
+const V = (x, y, z) => new THREE.Vector3(x, z, y); // model (x, depth, height) -> three (x, up, z)
+
+function disposeGroup(g) {
+  for (const o of [...g.children]) {
+    g.remove(o);
+    o.traverse(c => { c.geometry?.dispose(); const m = c.material; (Array.isArray(m) ? m : [m]).forEach(mm => { mm?.map?.dispose(); mm?.dispose(); }); });
+  }
+}
+function resetCamera() {
+  const W = P.house.width, D = P.house.depth, H = P.house.floors * fh();
+  const c = V(W / 2, D / 2, H / 2), r = Math.max(W, D, H);
+  controls.target.copy(c);
+  camera.position.set(c.x + r * 1.1, c.y + r * 1.15, c.z + r * 1.65);
+  controls.update();
+}
+function rebuildHouse3D() {
+  disposeGroup(houseG);
+  scene.background = new THREE.Color(theme.scene);
+  const W = P.house.width, D = P.house.depth, F = P.house.floors, H = fh();
+  const lineCol = new THREE.Color(theme['text-secondary']);
+  for (let f = 0; f < F; f++) {
+    const y0 = f * H;
+    // floor slab
+    const img = planImage(f);
+    const mat = new THREE.MeshBasicMaterial({ color: img ? 0xffffff : lineCol, transparent: true,
+      opacity: img ? 0.75 : 0.07, side: THREE.DoubleSide, depthWrite: false });
+    if (img) { const tex = new THREE.Texture(img); tex.needsUpdate = true; tex.colorSpace = THREE.SRGBColorSpace; mat.map = tex; }
+    const slab = new THREE.Mesh(new THREE.PlaneGeometry(W, D), mat);
+    slab.rotation.x = -Math.PI / 2; slab.position.copy(V(W / 2, D / 2, y0 + 0.005));
+    houseG.add(slab);
+    // 1 m grid on each floor
+    const pts = [], g = P.units === 'ft' ? 3 / FT : 1;
+    for (let x = 0; x <= W + 1e-6; x += g) pts.push(V(x, 0, y0), V(x, D, y0));
+    for (let y = 0; y <= D + 1e-6; y += g) pts.push(V(0, y, y0), V(W, y, y0));
+    houseG.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: lineCol, transparent: true, opacity: 0.18 })));
+    // walls outline
+    const box = new THREE.EdgesGeometry(new THREE.BoxGeometry(W, H, D));
+    const edges = new THREE.LineSegments(box, new THREE.LineBasicMaterial({ color: lineCol, transparent: true, opacity: 0.6 }));
+    edges.position.copy(V(W / 2, D / 2, y0 + H / 2));
+    houseG.add(edges);
+  }
+}
+const sphereGeo = new THREE.SphereGeometry(0.13, 18, 12);
+let sampleMesh = null;
+function rebuildSamples3D() {
+  disposeGroup(sampleG); sampleMesh = null;
+  const S = P.samples; if (!S.length) return;
+  sampleMesh = new THREE.InstancedMesh(sphereGeo.clone(), new THREE.MeshBasicMaterial(), S.length);
+  const m = new THREE.Matrix4(), c = new THREE.Color();
+  S.forEach((s, i) => {
+    const [x, y, z] = samplePos(s);
+    m.makeTranslation(x, z, y); sampleMesh.setMatrixAt(i, m);
+    const [r, g, b] = colorFor(s.dbm); c.setRGB(r, g, b, THREE.SRGBColorSpace); sampleMesh.setColorAt(i, c);
+  });
+  sampleG.add(sampleMesh);
+  // thin outline shell so samples read against the cloud
+  const shell = new THREE.InstancedMesh(new THREE.SphereGeometry(0.16, 18, 12),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(theme['text-primary']), side: THREE.BackSide }), S.length);
+  S.forEach((s, i) => { const [x, y, z] = samplePos(s); m.makeTranslation(x, z, y); shell.setMatrixAt(i, m); });
+  sampleG.add(shell);
+}
+function dotTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.55, 'rgba(255,255,255,0.9)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+function rebuildCloud3D() {
+  disposeGroup(cloudG);
+  if (!P.viz.cloud || !model) return;
+  const W = P.house.width, D = P.house.depth, H = fh(), F = P.house.floors;
+  let r = Math.max(0.2, P.viz.res);
+  while ((W / r) * (D / r) * (H / r) * F > 120000) r *= 1.25; // keep it responsive
+  const pos = [], col = [], { mid } = P.viz, flt = P.viz.filter;
+  for (let f = 0; f < F; f++) {
+    if (P.viz.cloudScope === 'floor' && f !== ui.floor) continue;
+    for (let z = f * H + r / 2; z < (f + 1) * H - 0.1; z += r)
+      for (let y = r / 2; y < D; y += r)
+        for (let x = r / 2; x < W; x += r) {
+          const v = estimate(x, y, z);
+          if (flt === 'weak' && v >= mid) continue;
+          if (flt === 'strong' && v < mid) continue;
+          pos.push(x, z, y);
+          const [cr, cg, cb] = colorFor(v); const c = new THREE.Color().setRGB(cr, cg, cb, THREE.SRGBColorSpace);
+          col.push(c.r, c.g, c.b);
+        }
+  }
+  if (!pos.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({ size: P.viz.size, vertexColors: true, transparent: true, opacity: P.viz.opacity,
+    depthWrite: false, map: dotTexture(), alphaTest: 0.02, sizeAttenuation: true });
+  cloudG.add(new THREE.Points(geo, mat));
+}
+let routerRings = [];
+function updateMarker3D() {
+  disposeGroup(markG); routerRings = [];
+  const ink = new THREE.Color(theme['text-primary']);
+  if (P.router) {
+    const [x, y, z] = routerPos(), f0 = P.router.floor * fh();
+    const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.22), new THREE.MeshBasicMaterial({ color: ink }));
+    body.position.copy(V(x, y, z)); markG.add(body);
+    markG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(x, y, f0), V(x, y, z)]),
+      new THREE.LineBasicMaterial({ color: ink })));
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16),
+        new THREE.MeshBasicMaterial({ color: ink, wireframe: true, transparent: true, opacity: 0.2 }));
+      ring.position.copy(V(x, y, z)); ring.userData.phase = i / 3; markG.add(ring); routerRings.push(ring);
+    }
+  }
+  if (ui.pos) {
+    const z = ui.floor * fh() + P.deviceHeight, acc = new THREE.Color(theme.accent);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.4, 16), new THREE.MeshBasicMaterial({ color: acc }));
+    cone.rotation.x = Math.PI; cone.position.copy(V(ui.pos.x, ui.pos.y, z + 0.45)); markG.add(cone);
+    markG.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(ui.pos.x, ui.pos.y, ui.floor * fh()), V(ui.pos.x, ui.pos.y, z + 0.25)]),
+      new THREE.LineBasicMaterial({ color: acc })));
+  }
+}
+function resize3D() {
+  const r = tcv.parentElement.getBoundingClientRect();
+  renderer.setSize(Math.max(1, r.width), Math.max(1, r.height), false);
+  camera.aspect = r.width / Math.max(1, r.height); camera.updateProjectionMatrix();
+}
+// hover on samples
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2(), tip = $('tip');
+tcv.addEventListener('mousemove', e => {
+  const r = tcv.getBoundingClientRect();
+  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const hit = sampleMesh ? ray.intersectObject(sampleMesh)[0] : null;
+  if (hit) {
+    const s = P.samples[hit.instanceId];
+    tip.innerHTML = `<b>${s.dbm} dBm</b> · ${quality(s.dbm)}<br>${floorName(s.floor)} · ${fmtU(s.x)}, ${fmtU(s.y)} ${P.units}<br><span class="muted">#${hit.instanceId + 1} · ${new Date(s.t).toLocaleTimeString()}${s.manual ? ' · manual' : ''}</span>`;
+    tip.style.display = 'block';
+    tip.style.left = Math.min(innerWidth - 180, e.clientX + 14) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+    $('threeReadout').textContent = `Sample #${hit.instanceId + 1}: ${s.dbm} dBm`;
+  } else { tip.style.display = 'none'; $('threeReadout').textContent = 'Hover a sample for details'; }
+});
+tcv.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const t = clock.getElapsedTime();
+  for (const ring of routerRings) {
+    const k = (t * 0.35 + ring.userData.phase) % 1;
+    ring.scale.setScalar(0.3 + k * 3.5); ring.material.opacity = 0.15 * (1 - k);
+  }
+  controls.update(); renderer.render(scene, camera);
+});
+
+// ---------------------------------------------------------------- sidebar
+function renderTable() {
+  $('nSamples').textContent = P.samples.length;
+  const rows = P.samples.map((s, i) => `<tr><td>${i + 1}</td><td>${s.floor + 1}</td><td class="num">${fmtU(s.x)}</td><td class="num">${fmtU(s.y)}</td>` +
+    `<td class="num"><span class="sw" style="background:${cssColor(colorFor(s.dbm))}"></span>${s.dbm}</td>` +
+    `<td><button data-del="${i}" title="Delete sample">×</button></td></tr>`).reverse();
+  $('sampleRows').innerHTML = rows.join('') || `<tr><td colspan="6" class="muted">No samples yet.</td></tr>`;
+}
+$('sampleRows').addEventListener('click', e => {
+  const i = e.target.dataset.del; if (i == null) return;
+  P.samples.splice(+i, 1); changed();
+});
+function renderLegend() {
+  const { min, mid, max } = P.viz, n = 12, stops = [];
+  for (let i = 0; i <= n; i++) { const v = min + (max - min) * i / n; stops.push(`${cssColor(colorFor(v))} ${(100 * i / n).toFixed(1)}%`); }
+  $('ramp').style.background = `linear-gradient(90deg, ${stops.join(',')})`;
+  $('tMin').textContent = min; $('tMid').textContent = mid; $('tMax').textContent = max;
+}
+function syncInputs() {
+  $('units').value = P.units;
+  $('floors').value = P.house.floors;
+  $('houseW').value = fmtU(P.house.width); $('houseD').value = fmtU(P.house.depth); $('floorH').value = fmtU(P.house.floorHeight);
+  $('devH').value = fmtU(P.deviceHeight); $('routerH').value = fmtU(P.routerHeight); $('nRead').value = P.samplesPerPoint;
+  $('vMin').value = P.viz.min; $('vMid').value = P.viz.mid; $('vMax').value = P.viz.max;
+  $('cloudChk').checked = P.viz.cloud; $('cloudScope').value = P.viz.cloudScope; $('cloudFilter').value = P.viz.filter;
+  $('vRes').value = fmtU(P.viz.res); $('vSize').value = fmtU(P.viz.size, 2); $('vOpac').value = P.viz.opacity;
+  floorLabels();
+}
+function floorLabels() {
+  $('floorLbl').textContent = floorName(ui.floor);
+  $('planFloorLbl').textContent = floorName(ui.floor).toLowerCase();
+  $('planTitle').textContent = `Floor plan · ${floorName(ui.floor).toLowerCase()} (top-down)`;
+}
+function setMode(m) {
+  ui.mode = m;
+  $('modePos').classList.toggle('on', m === 'position');
+  $('modeRouter').classList.toggle('on', m === 'router');
+  draw2D();
+}
+function setFloor(f) {
+  f = Math.max(0, Math.min(P.house.floors - 1, f));
+  if (f === ui.floor) return;
+  ui.floor = f; floorLabels(); buildHeat(); draw2D(); updateMarker3D();
+  if (P.viz.cloudScope === 'floor') rebuildCloud3D();
+}
+
+const num = (id, fn) => $(id).addEventListener('change', () => { const v = parseFloat($(id).value); if (Number.isFinite(v)) fn(v); changed({ structure: true }); });
+num('houseW', v => P.house.width = Math.max(1, fromU(v)));
+num('houseD', v => P.house.depth = Math.max(1, fromU(v)));
+num('floorH', v => P.house.floorHeight = Math.max(1.5, fromU(v)));
+num('floors', v => { P.house.floors = Math.max(1, Math.min(6, Math.round(v))); ui.floor = Math.min(ui.floor, P.house.floors - 1); });
+num('devH', v => P.deviceHeight = Math.max(0, fromU(v)));
+num('routerH', v => { P.routerHeight = Math.max(0, fromU(v)); if (P.router) P.router.h = P.routerHeight; });
+num('nRead', v => P.samplesPerPoint = Math.max(1, Math.min(20, Math.round(v))));
+num('vMin', v => P.viz.min = Math.min(v, P.viz.mid - 1));
+num('vMid', v => P.viz.mid = v);
+num('vMax', v => P.viz.max = Math.max(v, P.viz.mid + 1));
+num('vRes', v => P.viz.res = Math.max(0.2, fromU(v)));
+num('vSize', v => P.viz.size = Math.max(0.05, fromU(v)));
+num('vOpac', v => P.viz.opacity = Math.max(0.05, Math.min(1, v)));
+$('units').addEventListener('change', () => { P.units = $('units').value; changed({ structure: true }); });
+$('cloudChk').addEventListener('change', () => { P.viz.cloud = $('cloudChk').checked; changed(); });
+$('cloudScope').addEventListener('change', () => { P.viz.cloudScope = $('cloudScope').value; changed(); });
+$('cloudFilter').addEventListener('change', () => { P.viz.filter = $('cloudFilter').value; changed(); });
+$('modePos').onclick = () => setMode('position');
+$('modeRouter').onclick = () => { setMode('router'); setStatus('Click the floor plan where the router sits (pick the right floor first).'); };
+$('floorUp').onclick = () => setFloor(ui.floor + 1);
+$('floorDown').onclick = () => setFloor(ui.floor - 1);
+$('takeBtn').onclick = takeSample;
+$('manualBtn').onclick = () => {
+  const v = parseFloat($('manualDbm').value);
+  if (!Number.isFinite(v) || v > 0 || v < -120) { setStatus('Enter a dBm value between -120 and 0, e.g. -62.', true); return; }
+  if (addSample(v, { manual: true })) $('manualDbm').value = '';
+};
+$('undoBtn').onclick = () => { if (P.samples.pop()) { setStatus('Removed last sample.'); changed(); } };
+$('clearBtn').onclick = () => { if (P.samples.length && confirm(`Delete all ${P.samples.length} samples?`)) { P.samples = []; changed(); } };
+$('resetBtn').onclick = () => { if (confirm('Reset the whole project (house, router, samples, images)?')) { P = defaultProject(); ui.pos = null; ui.floor = 0; planImages.clear(); changed({ structure: true }); resetCamera(); } };
+
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+$('exportBtn').onclick = () => download(`wifi-heatmap-${stamp()}.json`, JSON.stringify(P, null, 1), 'application/json');
+$('csvBtn').onclick = () => {
+  const lines = ['index,floor,x_m,y_m,height_m,dbm,time,ssid,manual'];
+  P.samples.forEach((s, i) => lines.push([i + 1, s.floor + 1, s.x, s.y, (s.floor * fh() + s.h).toFixed(2), s.dbm, new Date(s.t).toISOString(), JSON.stringify(s.ssid || ''), !!s.manual].join(',')));
+  download(`wifi-samples-${stamp()}.csv`, lines.join('\n'), 'text/csv');
+};
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = async () => {
+  const f = $('importFile').files[0]; if (!f) return;
+  try { adopt(JSON.parse(await f.text())); ui.pos = null; changed({ structure: true }); resetCamera(); setStatus(`Imported ${P.samples.length} samples.`); }
+  catch (e) { setStatus('Import failed: ' + e.message, true); }
+  $('importFile').value = '';
+};
+$('planFile').onchange = () => {
+  const f = $('planFile').files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => { // downscale so the project file stays small
+    const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = img.width * k; c.height = img.height * k;
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    P.floorplans[ui.floor] = c.toDataURL('image/jpeg', 0.85);
+    URL.revokeObjectURL(img.src); planImages.delete(ui.floor); changed({ structure: true });
+  };
+  img.src = URL.createObjectURL(f); $('planFile').value = '';
+};
+$('planClear').onclick = () => { delete P.floorplans[ui.floor]; planImages.delete(ui.floor); changed({ structure: true }); };
+$('themeBtn').onclick = () => {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
+  document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('wifiHeatmapTheme', document.documentElement.dataset.theme); } catch {}
+  themeChanged();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => themeChanged());
+
+addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  const step = P.units === 'ft' ? 1 / FT : 0.25;
+  const nudge = (dx, dy) => {
+    e.preventDefault();
+    const p = ui.pos || { x: P.house.width / 2, y: P.house.depth / 2 };
+    ui.pos = { x: Math.max(0, Math.min(P.house.width, p.x + dx)), y: Math.max(0, Math.min(P.house.depth, p.y + dy)) };
+    draw2D(); updateMarker3D();
+  };
+  if (e.code === 'Space') { e.preventDefault(); takeSample(); }
+  else if (e.key === 'ArrowLeft') nudge(-step, 0);
+  else if (e.key === 'ArrowRight') nudge(step, 0);
+  else if (e.key === 'ArrowUp') nudge(0, -step);
+  else if (e.key === 'ArrowDown') nudge(0, step);
+  else if (e.key === 'PageUp') { e.preventDefault(); setFloor(ui.floor + 1); }
+  else if (e.key === 'PageDown') { e.preventDefault(); setFloor(ui.floor - 1); }
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); $('undoBtn').click(); }
+});
+
+// ---------------------------------------------------------------- refresh
+function changed({ structure = false } = {}) {
+  if (structure) { syncInputs(); layout2D(); rebuildHouse3D(); }
+  fitModel(); buildHeat(); draw2D(); renderTable(); renderLegend();
+  rebuildSamples3D(); rebuildCloud3D(); updateMarker3D();
+  save();
+}
+function themeChanged() { readTheme(); rebuildHouse3D(); changed(); }
+
+new ResizeObserver(() => { layout2D(); draw2D(); }).observe(cv.parentElement);
+new ResizeObserver(resize3D).observe(tcv.parentElement);
+
+(async function init() {
+  try { const t = localStorage.getItem('wifiHeatmapTheme'); if (t) document.documentElement.dataset.theme = t; } catch {}
+  readTheme();
+  await load();
+  syncInputs(); layout2D(); rebuildHouse3D(); resize3D(); resetCamera();
+  changed();
+  if (!P.router) { setMode('router'); setStatus('Start by placing the router: choose its floor, then click its spot on the plan.'); }
+  livePoll();
+})();
+</script>
+</body>
+</html>
