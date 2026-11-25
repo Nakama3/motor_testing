@@ -37,6 +37,19 @@ Browsers can't read WiFi signal strength, so `server.py` asks the OS:
 `http://<laptop-ip>:8000` on the phone, and type the dBm from a WiFi analyzer app into
 **Manual dBm** for each spot.
 
+## Walk mode (fastest way to cover the house)
+
+Instead of one click per sample, sample continuously while you walk:
+
+1. Click where you're standing, then press **W**.
+2. Walk at a steady pace in a straight line. The laptop reads the signal about every 0.6 s.
+3. At each corner or turn, click where you are now. The readings since the last point are
+   spread evenly along that straight leg, based on when each one was taken.
+4. Keep going leg by leg, then press **Esc** to stop. Readings after your last click are discarded.
+
+On macOS, install CoreWLAN first (`pip install pyobjc-framework-CoreWLAN`). Without it each
+reading takes a few seconds, so a walk only gets a handful of samples.
+
 ## Tips
 
 - Set **Width / Depth** to your house's outer dimensions first, and optionally upload a

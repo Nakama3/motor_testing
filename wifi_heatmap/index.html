@@ -205,12 +205,14 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); borde
       <label>Readings / pt<input type="number" id="nRead" step="1" min="1" max="20"></label>
     </div>
     <button id="takeBtn" class="primary">Take sample <kbd>Space</kbd></button>
+    <button id="walkBtn" style="width:100%; margin-bottom:8px">Start walk <kbd>W</kbd></button>
     <div class="row" style="grid-template-columns: 1fr auto">
       <input type="number" id="manualDbm" placeholder="Manual dBm, e.g. -62" step="1">
       <button id="manualBtn">Add manual</button>
     </div>
     <div id="status" class="status"></div>
     <p class="hint">Click the floor plan where you're standing, then take a sample. Arrow keys nudge your position; <kbd>PgUp</kbd>/<kbd>PgDn</kbd> change floor. Walk the whole house — corners and far rooms matter most.</p>
+    <p class="hint"><b>Walk mode:</b> stand at your position, press <kbd>W</kbd>, then walk at a steady pace in a straight line. At each corner, click where you are: readings taken on the way are spread along that line. <kbd>Esc</kbd> stops. Turn at walls rather than wandering, so each leg is straight.</p>
   </section>
 
   <section>
@@ -476,7 +478,8 @@ async function load() {
 // ---------------------------------------------------------------- signal reading
 function setStatus(msg, err = false) { const el = $('status'); el.textContent = msg; el.className = 'status' + (err ? ' err' : ''); }
 function demoParams() {
-  const p = ui.pos, rp = routerPos();
+  // in demo walk mode the mouse cursor stands in for where you are
+  const p = walk.on ? (ui.hover2d || ui.pos) : ui.pos, rp = routerPos();
   if (!p) return '';
   const z = ui.floor * fh() + P.deviceHeight;
   const r = rp || [P.house.width / 2, P.house.depth / 2, 1];
@@ -495,7 +498,7 @@ function showLive(j) {
 }
 let livePending = false;
 async function livePoll() {
-  if ($('liveChk').checked && ui.server && !livePending && !ui.busy) {
+  if ($('liveChk').checked && ui.server && !livePending && !ui.busy && !walk.on) {
     livePending = true;
     try { showLive(await readSignal(1)); } catch (e) { $('liveDbm').textContent = '—'; $('liveInfo').textContent = e.message; }
     livePending = false;
@@ -513,6 +516,7 @@ function addSample(dbm, extra = {}) {
 }
 async function takeSample() {
   if (ui.busy) return;
+  if (walk.on) { setStatus('Walking: click where you are to log the readings, or press Esc to stop.'); return; }
   if (!ui.pos) { setStatus('Click the floor plan to mark where you are first.', true); return; }
   if (!ui.server) { setStatus('No server: type a dBm value and use "Add manual".', true); return; }
   ui.busy = true; $('takeBtn').disabled = true; $('takeBtn').textContent = 'Reading…';
@@ -522,6 +526,66 @@ async function takeSample() {
     addSample(j.dbm, { ssid: j.ssid || undefined });
   } catch (e) { setStatus('Could not read signal: ' + e.message, true); }
   ui.busy = false; $('takeBtn').disabled = false; $('takeBtn').innerHTML = 'Take sample <kbd>Space</kbd>';
+}
+
+// ---------------------------------------------------------------- walk mode
+// Sample continuously while walking; each click marks where you are now, and the
+// readings since the previous point are spread along that straight leg by time.
+const walk = { on: false, t0: 0, buf: [], path: [], legs: 0, added: 0 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function walkUI() {
+  $('walkBtn').innerHTML = walk.on ? 'Stop walk <kbd>Esc</kbd>' : 'Start walk <kbd>W</kbd>';
+  $('walkBtn').classList.toggle('primary', walk.on);
+  $('takeBtn').disabled = walk.on;
+}
+function walkStatus() {
+  const n = walk.buf.filter(r => r.t >= walk.t0).length;
+  setStatus(`Walking · ${n} reading${n === 1 ? '' : 's'} since the last point · ${walk.added} samples logged. Click where you are now.`);
+}
+async function walkLoop() {
+  while (walk.on) {
+    const a = performance.now();
+    try {
+      const j = await readSignal(1);
+      if (!walk.on) break;
+      walk.buf.push({ t: (a + performance.now()) / 2, dbm: j.dbm, ssid: j.ssid });
+      showLive(j); walkStatus();
+    } catch (e) { setStatus('Could not read signal: ' + e.message, true); }
+    const dt = performance.now() - a;
+    if (dt < 600) await sleep(600 - dt);
+  }
+}
+function startWalk() {
+  if (walk.on || ui.busy) return;
+  if (!ui.server) { setStatus('Walk mode needs the server (python3 server.py) to read the signal.', true); return; }
+  if (!ui.pos) { setStatus('Click the floor plan where you are standing, then press W to start walking.', true); return; }
+  setMode('position');
+  Object.assign(walk, { on: true, t0: performance.now(), buf: [], path: [{ ...ui.pos }], legs: 0, added: 0 });
+  walkUI(); walkStatus(); draw2D(); walkLoop();
+}
+function stopWalk(reason = '') {
+  if (!walk.on) return;
+  const dropped = walk.buf.filter(r => r.t >= walk.t0).length;
+  walk.on = false; walk.buf = []; walk.path = [];
+  walkUI(); draw2D();
+  setStatus(`${reason}Walk stopped: ${walk.added} samples over ${walk.legs} leg${walk.legs === 1 ? '' : 's'}.` +
+            (dropped ? ` ${dropped} reading${dropped === 1 ? '' : 's'} after your last click ${dropped === 1 ? 'was' : 'were'} discarded.` : ''));
+}
+function walkTo(p) {
+  const t1 = performance.now(), a = ui.pos, span = Math.max(1, t1 - walk.t0);
+  const legReadings = walk.buf.filter(r => r.t >= walk.t0 && r.t <= t1);
+  for (const r of legReadings) {
+    const f = Math.max(0, Math.min(1, (r.t - walk.t0) / span));
+    P.samples.push({ x: +(a.x + (p.x - a.x) * f).toFixed(2), y: +(a.y + (p.y - a.y) * f).toFixed(2), floor: ui.floor,
+                     h: P.deviceHeight, dbm: +r.dbm.toFixed(1), t: Date.now() - (t1 - r.t), ssid: r.ssid || undefined, walk: true });
+  }
+  walk.buf = walk.buf.filter(r => r.t > t1); walk.t0 = t1;
+  walk.legs++; walk.added += legReadings.length;
+  ui.pos = { ...p }; walk.path.push({ ...p });
+  changed();
+  const len = Math.hypot(p.x - a.x, p.y - a.y);
+  if (!legReadings.length) setStatus(`No readings on that ${fmtU(len)} ${P.units} leg. Walk more slowly${navigator.platform.startsWith('Mac') ? ', or install CoreWLAN for faster readings (see README)' : ''}.`, true);
+  else setStatus(`Logged ${legReadings.length} samples along ${fmtU(len)} ${P.units}. Keep walking and click at the next corner, or press Esc.`);
 }
 
 // ---------------------------------------------------------------- 2D plan
@@ -609,6 +673,16 @@ function draw2D() {
     ctx.fillText(here ? 'Router' : `Router (${floorName(P.router.floor).toLowerCase()})`, px, py + 24);
     ctx.globalAlpha = 1;
   }
+  // walk path so far, and the leg in progress
+  if (walk.on && ui.pos) {
+    ctx.strokeStyle = theme.accent; ctx.lineWidth = 2; ctx.beginPath();
+    walk.path.forEach((q, i) => { const [px, py] = m2px(q.x, q.y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.stroke();
+    if (ui.hover2d) {
+      const [ax, ay] = m2px(ui.pos.x, ui.pos.y), [bx, by] = m2px(ui.hover2d.x, ui.hover2d.y);
+      ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
   // you
   if (ui.pos) {
     const [px, py] = m2px(ui.pos.x, ui.pos.y);
@@ -626,7 +700,9 @@ function draw2D() {
     ro.textContent = `${fmtU(h.x)}, ${fmtU(h.y)} ${P.units} · ` +
       (near ? `measured ${near.dbm} dBm (${quality(near.dbm)})` : est != null ? `estimated ${Math.round(est)} dBm (${quality(est)})` : 'no samples yet');
   } else {
-    ro.textContent = ui.mode === 'router' ? 'Click where the router is' : ui.pos ? 'Click to move · Space to sample' : 'Click to set your position';
+    ro.textContent = ui.mode === 'router' ? 'Click where the router is'
+      : walk.on ? 'Walking · click where you are at each corner · Esc to stop'
+      : ui.pos ? 'Click to move · Space to sample · W to walk' : 'Click to set your position';
   }
 }
 function planEvent(e) {
@@ -643,6 +719,8 @@ cv.addEventListener('click', e => {
     P.router = { x: +p.x.toFixed(2), y: +p.y.toFixed(2), floor: ui.floor, h: P.routerHeight };
     setMode('position'); setStatus('Router placed. Now click where you are and take samples.');
     changed();
+  } else if (walk.on) {
+    walkTo(p);
   } else {
     ui.pos = p; draw2D(); updateMarker3D();
   }
@@ -853,6 +931,7 @@ function setMode(m) {
 function setFloor(f) {
   f = Math.max(0, Math.min(P.house.floors - 1, f));
   if (f === ui.floor) return;
+  if (walk.on) stopWalk('Changed floor. ');
   ui.floor = f; floorLabels(); buildHeat(); draw2D(); updateMarker3D();
   if (P.viz.cloudScope === 'floor') rebuildCloud3D();
 }
@@ -880,6 +959,7 @@ $('modeRouter').onclick = () => { setMode('router'); setStatus('Click the floor 
 $('floorUp').onclick = () => setFloor(ui.floor + 1);
 $('floorDown').onclick = () => setFloor(ui.floor - 1);
 $('takeBtn').onclick = takeSample;
+$('walkBtn').onclick = () => walk.on ? stopWalk() : startWalk();
 $('manualBtn').onclick = () => {
   const v = parseFloat($('manualDbm').value);
   if (!Number.isFinite(v) || v > 0 || v < -120) { setStatus('Enter a dBm value between -120 and 0, e.g. -62.', true); return; }
@@ -940,6 +1020,8 @@ addEventListener('keydown', e => {
     draw2D(); updateMarker3D();
   };
   if (e.code === 'Space') { e.preventDefault(); takeSample(); }
+  else if (e.key === 'w' || e.key === 'W') { if (!e.ctrlKey && !e.metaKey) { e.preventDefault(); walk.on ? stopWalk() : startWalk(); } }
+  else if (e.key === 'Escape') stopWalk();
   else if (e.key === 'ArrowLeft') nudge(-step, 0);
   else if (e.key === 'ArrowRight') nudge(step, 0);
   else if (e.key === 'ArrowUp') nudge(0, -step);
